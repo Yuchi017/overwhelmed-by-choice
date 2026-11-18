@@ -1,9 +1,11 @@
 __pycache__/
 *.pyc
 logs/
-results/
-analyze_res/
 *.log
+# experiment outputs (regenerate with scripts/ and analysis/)
+results/
+analysis_results/
+figures/
 # MIMIC-III is credentialed data and must never be committed
 data/mimic*/
 data/physionet*/

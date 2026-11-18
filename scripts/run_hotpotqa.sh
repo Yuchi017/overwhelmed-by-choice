@@ -1,8 +1,9 @@
 #!/bin/bash
-# Reproduce the HotpotQA results: single-pass, hierarchical partitioning, and permutation
-# inference across candidate-set sizes N. Starts a vLLM server, runs all methods, then stops it.
+# Reproduce the HotpotQA experiments for one model: single-pass, CoT, hierarchical
+# partitioning, permutation inference, the length-controlled and irrelevant-context
+# variants, and the gold-margin analysis.
 #
-# Usage: bash scripts/run_hotpotqa.sh [MODEL] [GPU_IDS] [TP]
+# Usage: bash scripts/run_hotpotqa.sh [MODEL] [GPU_IDS] [TENSOR_PARALLEL]
 #   e.g. bash scripts/run_hotpotqa.sh meta-llama/Llama-3.1-8B-Instruct 0 1
 set -e
 cd "$(dirname "$0")/.."
@@ -11,30 +12,32 @@ MODEL="${1:-meta-llama/Llama-3.1-8B-Instruct}"
 GPUS="${2:-0}"
 TP="${3:-1}"
 PORT="${PORT:-8000}"
-DATASET_NAME=hotpotqa
-DATASET_PATH=data/hotpotqa
-MAX_SAMPLES=200
-NUM_OPTIONS_LIST=(5 10 20 40 80 160)
-GROUP_SIZE=5
-NUM_SHUFFLES=5
 TAG="${MODEL##*/}"
+RUN="python scripts/run_inference.py --model $MODEL --port $PORT --dataset beir --max-samples 200"
 
 ./scripts/start_vllm.sh "$MODEL" "$PORT" "$TP" "$GPUS" "vllm_${TAG}.log" > /dev/null
 trap 'lsof -ti tcp:${PORT} | xargs -r kill' EXIT
 ./scripts/wait_vllm_ready.sh "$PORT"
 
-COMMON=(--vllm_port "$PORT" --model "$MODEL" --dataset-class Bier --dataset-path "$DATASET_PATH" --max-samples "$MAX_SAMPLES")
+# Main results (N = 5 ... 160)
+$RUN --method single       --data-path data/hotpotqa
+$RUN --method single       --data-path data/hotpotqa --enable-cot
+$RUN --method hierarchical --data-path data/hotpotqa --group-size 5
+$RUN --method permutation  --data-path data/hotpotqa --num-shuffles 5
 
-for N in "${NUM_OPTIONS_LIST[@]}"; do
-  # 1) Single-pass baseline (add --enable-cot for the CoT variant)
-  out="results/single/${TAG}/${DATASET_NAME}/option${N}_sample${MAX_SAMPLES}.json"
-  [[ -f $out ]] || python eval.py "${COMMON[@]}" --num-options "$N" --output "$out"
+# Distractor verbosity: short vs long passages
+$RUN --method single --data-path data/hotpotqa_short --max-tokens 200
+$RUN --method single --data-path data/hotpotqa_long  --max-tokens 200
 
-  # 2) Hierarchical partitioning
-  out="results/group/${TAG}/${DATASET_NAME}/option${N}_sample${MAX_SAMPLES}_group${GROUP_SIZE}.json"
-  [[ -f $out ]] || python eval_group.py "${COMMON[@]}" --num-options "$N" --group "$GROUP_SIZE" --output "$out"
-
-  # 3) Permutation-based inference
-  out="results/shuffle/${TAG}/${DATASET_NAME}/option${N}_sample${MAX_SAMPLES}_shuffle${NUM_SHUFFLES}.json"
-  [[ -f $out ]] || python eval_shuffle.py "${COMMON[@]}" --num-options "$N" --num-shuffles "$NUM_SHUFFLES" --shuffle-seed-base 42 --output "$out"
+# Irrelevant context: prepend k copies of data/noise.txt (~47 tokens each) at N = 40
+for K in 0 5 10 20 40 80 160; do
+  $RUN --method single --data-path data/hotpotqa --tag hotpotqa_noise --num-options 40 --noise-repeats $K
 done
+
+# Stop vLLM before loading the model with transformers for the log-prob analysis
+lsof -ti tcp:${PORT} | xargs -r kill; sleep 10
+export CUDA_VISIBLE_DEVICES="${GPUS%%,*}"
+python scripts/score_options.py --source single       --model "$MODEL"
+python scripts/score_options.py --source single       --model "$MODEL" --enable-cot
+python scripts/score_options.py --source hierarchical --model "$MODEL"
+python scripts/score_options.py --source permutation  --model "$MODEL"

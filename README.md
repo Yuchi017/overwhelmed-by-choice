@@ -1,8 +1,13 @@
 # Overwhelmed by Choice: Studying LLM Decision Making at Scale
 
-Code for the NeurIPS 2026 TAE (Trust-AI-Eval) workshop paper *Overwhelmed by Choice: Studying LLM Decision Making at Scale*.
+Code and data for the NeurIPS 2026 TAE (Trust-AI-Eval) workshop paper *Overwhelmed by Choice: Studying LLM Decision Making at Scale*.
 
-We evaluate LLMs on candidate selection as the number of candidates N grows (5 → 160), analyze why accuracy degrades (gold-margin collapse, early-option dominance), and evaluate two inference-time interventions: hierarchical partitioning and permutation-based inference.
+We ask LLMs to pick the correct candidate out of N (5 → 160) and find that accuracy drops sharply as N grows. The repository contains:
+
+- the three inference methods: single-pass, hierarchical partitioning, and permutation-based inference;
+- the gold-margin analysis (per-candidate answer log-probabilities);
+- the robustness variants: chain-of-thought, length-controlled distractors, and an irrelevant-context prefix;
+- the scripts that draw the paper's figures and tables.
 
 ## Setup
 
@@ -10,58 +15,92 @@ We evaluate LLMs on candidate selection as the number of candidates N grows (5 �
 pip install -r requirements.txt
 ```
 
-Inference uses a local [vLLM](https://github.com/vllm-project/vllm) OpenAI-compatible server; the log-probability analyses load models with Hugging Face `transformers`.
+Inference talks to a local [vLLM](https://github.com/vllm-project/vllm) OpenAI-compatible server (`scripts/start_vllm.sh`). The log-probability analysis loads models directly with `transformers`. Run all commands from the repository root.
 
-Note: the local `datasets/` package shadows the Hugging Face `datasets` library. Run all scripts from the repository root.
+## Quick start
+
+To reproduce every HotpotQA experiment for one model (this starts and stops vLLM itself):
+
+```bash
+bash scripts/run_hotpotqa.sh meta-llama/Llama-3.1-8B-Instruct 0 1    # MODEL GPU_IDS TENSOR_PARALLEL
+```
+
+You can also run a single configuration against a running server:
+
+```bash
+bash scripts/start_vllm.sh meta-llama/Llama-3.1-8B-Instruct 8000 1 0 vllm.log
+python scripts/run_inference.py --method single       --num-options 80
+python scripts/run_inference.py --method hierarchical --num-options 80 --group-size 5
+python scripts/run_inference.py --method permutation  --num-options 80 --num-shuffles 5
+```
+
+Each run writes `results/<method>/<model>/<data>/option{N}_sample200[...].json`. The file holds the config, accuracy and cost metrics, and a per-sample log (raw responses, predictions, and for the multi-call methods every round or permutation).
+
+## Methods
+
+| `--method` | What it does | Paper |
+|---|---|---|
+| `single` | All N candidates in one prompt. `--enable-cot` adds a reasoning instruction; `--noise-repeats k` prepends k copies of irrelevant text. | baseline, Sec. 2–3 |
+| `hierarchical` | Knockout tournament: split candidates into groups of `--group-size`, keep each group's winner, repeat until one remains. | Sec. 4 |
+| `permutation` | Ask on `--num-shuffles` random orderings, then choose among the distinct winners. | Sec. 4 |
+
+The prompt template is in `ddm/prompts.py` and answer parsing is in `ddm/parsing.py`. An unparseable answer counts as wrong in `single`; in the multi-call methods it falls back to the first option of that call.
+
+## Gold-margin analysis
+
+```bash
+python scripts/score_options.py --source single                        # full N-way prompt
+python scripts/score_options.py --source single --enable-cot
+python scripts/score_options.py --source hierarchical                  # final round of each tournament
+python scripts/score_options.py --source permutation                   # stage-2 prompt of each run
+```
+
+The score of option *k* is log P(`<Answer> k </Answer>` | prompt). The gold margin is the gold score minus the best distractor score. The `hierarchical` and `permutation` sources read the matching `results/` files, so run inference first. Outputs go to `analysis_results/scores/`.
+
+## Figures and tables
+
+```bash
+python analysis/plot_accuracy.py models   --datasets hotpotqa            # accuracy vs N, several models
+python analysis/plot_accuracy.py methods  --datasets hotpotqa            # single / CoT / hierarchy / permutation
+python analysis/plot_accuracy.py length   --short hotpotqa_short --long hotpotqa_long
+python analysis/plot_accuracy.py noise    --datasets hotpotqa_noise      # LaTeX table
+python analysis/plot_margin.py   competition --dataset hotpotqa          # gold vs distractors
+python analysis/plot_margin.py   models      --dataset hotpotqa
+python analysis/plot_margin.py   methods     --dataset hotpotqa
+python analysis/position_bias.py models      --dataset hotpotqa          # + five-bin LaTeX tables
+python analysis/position_bias.py methods     --dataset hotpotqa
+```
+
+Figures go to `figures/` as PDF and PNG. Pass `--models ...` to choose which models appear.
 
 ## Data
 
-- **HotpotQA** (included, `data/hotpotqa/`): a subset of the [BEIR](https://github.com/beir-cellar/beir) HotpotQA split (20k passages, 1k queries), stored as Python dicts (`corpus.pt`, `queries.pt`, `qrels.pt`). See `data/README.md`.
-- **MIMIC-III** (not included): credentialed data from [PhysioNet](https://physionet.org/content/mimiciii/). After obtaining access, build `mimic_queries.pt` / `mimic_options.pt` (see `datasets/mimic_dataset.py` for the expected format) and pass `--dataset-class MIMIC --dataset-path <dir>`.
+| Path | Content |
+|---|---|
+| `data/hotpotqa/` | HotpotQA subset from BEIR: 1,000 queries, 20,000 passages |
+| `data/hotpotqa_short/`, `data/hotpotqa_long/` | the same construction restricted to short (11–29 words) or long (201+ words) passages |
+| `data/noise.txt` | irrelevant text used for the context-length control |
 
-## Reproducing the HotpotQA results
+See `data/README.md` for formats and licensing. `scripts/build_beir_subset.py` builds the same kind of subset for other BEIR datasets (MS MARCO, NQ, FiQA, ...); load it with `--dataset beir --data-path <dir>`.
 
-Run all three inference methods for N ∈ {5, 10, 20, 40, 80, 160} (200 queries each):
+**MIMIC-III** is credentialed data from [PhysioNet](https://physionet.org/content/mimiciii/) and is not included. After obtaining access, create `mimic_queries.pt` (a list of `{"text": note, "icd9_codes": [...]}` dicts) and run with `--dataset mimic --data-path <dir>`. For the length-controlled variant, also pass `--option-pool-path <dir>`.
 
-```bash
-bash scripts/run_hotpotqa.sh meta-llama/Llama-3.1-8B-Instruct 0 1   # MODEL GPU_IDS TENSOR_PARALLEL
-```
+## Reproducibility notes
 
-Results go to `results/{single,group,shuffle}/<model>/hotpotqa/`. Each JSON contains per-sample predictions and an accuracy summary.
-
-To run a single configuration manually (with a vLLM server already up on port 8000):
-
-```bash
-python eval.py         --model meta-llama/Llama-3.1-8B-Instruct --dataset-path data/hotpotqa --num-options 80 --max-samples 200 --output out.json
-python eval.py         ... --enable-cot                     # chain-of-thought
-python eval_group.py   ... --group 5                        # hierarchical partitioning
-python eval_shuffle.py ... --num-shuffles 5                 # permutation-based inference
-```
-
-## Analysis: gold-margin / answer probabilities
-
-These scripts score every candidate by the log-probability of its answer index (no vLLM server needed; loads the model on GPU):
-
-```bash
-python ans_prob.py --model meta-llama/Llama-3.1-8B-Instruct           # single pass (Sec. 3.1)
-python ans_prob_group.py   --model meta-llama/Llama-3.1-8B-Instruct   # final round of hierarchical partitioning
-python ans_prob_shuffle.py --model meta-llama/Llama-3.1-8B-Instruct   # permutation inference
-```
-
-`ans_prob_group.py` and `ans_prob_shuffle.py` read the outputs of `run_hotpotqa.sh`, so run that first. Outputs go to `analyze_res/`.
+- **Fixed candidate sets.** Distractors come from `random.Random(42)`. `run_inference.py` creates a fresh generator for each N. `score_options.py` shares one generator across its N loop, which is how the paper's analysis files were made. Option order within a prompt depends only on a hash of the sample id, so the gold position of a sample never changes.
+- **Greedy decoding.** All generation uses temperature 0. Re-running the same configuration can still shift accuracy by about ±1–2 points because of vLLM batching nondeterminism.
+- **Other experiments.** The arXiv, Amazon-3M and MMLU-Pro results, the System-2 baselines (self-critique, few-shot, pairwise), and the attention analysis were run with a separate shared codebase. That code is not in this repository.
 
 ## Repository layout
 
 ```
-eval.py               single-pass candidate selection (optionally CoT)
-eval_group.py         hierarchical partitioning
-eval_shuffle.py       permutation-based inference
-ans_prob*.py          per-candidate log-prob / gold-margin analysis
-ddm_core.py           shared utilities (deterministic shuffling, reasoning config)
-vllm_client.py        async OpenAI-compatible client for vLLM
-datasets/             dataset loaders (BEIR/HotpotQA, MIMIC-III, arXiv)
-data/hotpotqa/        HotpotQA subset used in the paper
-scripts/              vLLM launch helpers and the end-to-end run script
+ddm/                    library
+  datasets/             BEIR (HotpotQA) and MIMIC-III loaders
+  methods/              single-pass, hierarchical, permutation
+  prompts.py parsing.py ordering.py llm.py scoring.py results.py plotting.py
+scripts/                run_inference.py, score_options.py, run_hotpotqa.sh, vLLM helpers, data building
+analysis/               figure and table scripts
+data/                   HotpotQA subsets and the irrelevant-context text
 ```
 
 ## Citation
