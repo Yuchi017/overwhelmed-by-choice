@@ -1,6 +1,8 @@
 # Overwhelmed by Choice: Studying LLM Decision Making at Scale
 
-Code and data for the NeurIPS 2026 TAE (Trust-AI-Eval) workshop paper *Overwhelmed by Choice: Studying LLM Decision Making at Scale*.
+[![arXiv](https://img.shields.io/badge/arXiv-2609.32809-b31b1b.svg)](https://arxiv.org/abs/2609.32809)
+
+Code and data for the NeurIPS 2026 TAE (Trust-AI-Eval) workshop paper [*Overwhelmed by Choice: Studying LLM Decision Making at Scale*](https://arxiv.org/abs/2609.32809).
 
 We ask LLMs to pick the correct candidate out of N (5 → 160) and find that accuracy drops sharply as N grows. The repository contains:
 
@@ -110,6 +112,9 @@ data/                   HotpotQA subsets and the irrelevant-context text
   title     = {Overwhelmed by Choice: Studying {LLM} Decision Making at Scale},
   author    = {Lin, Yu-Chi and Seth, Aryan and Aravind, Anshul and Lee, Eugene and Parekh, Tanmay and Peng, Nanyun and Chang, Kai-Wei},
   booktitle = {NeurIPS 2026 Workshop on Trust-AI-Eval (TAE)},
-  year      = {2026}
+  year      = {2026},
+  eprint    = {2609.32809},
+  archivePrefix = {arXiv},
+  url       = {https://arxiv.org/abs/2609.32809}
 }
 ```
